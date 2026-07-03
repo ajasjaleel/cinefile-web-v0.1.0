@@ -52,4 +52,6 @@ urlpatterns = [
     path("search/", views.search, name="search"),
     path("profile/", views.profile, name="profile"),
     path('toggle-watchlist/<int:movie_id>/', views.toggle_watchlist, name='toggle_watchlist'),
+
+    path("test-smtp/", views.test_smtp, name="test_smtp"),
 ]
