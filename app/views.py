@@ -492,7 +492,7 @@ def test_smtp(request):
         subject="SMTP Test",
         message="If you received this email, Brevo SMTP is working!",
         from_email=None,  # Uses DEFAULT_FROM_EMAIL
-        recipient_list=["ajasjaleel529@gmail.com"],
+        recipient_list=["ajasjaleel253@gmail.com"],
         fail_silently=False,
     )
 
