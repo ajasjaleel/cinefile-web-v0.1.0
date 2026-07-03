@@ -4,10 +4,13 @@ from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator  # Required for pages (48 movies per page)
 from .models import Franchise, Movie, WatchedMovie, Watchlist
 from django.contrib.auth.forms import UserCreationForm
-from django.contrib.auth import login
 from django.db.models import Max, Count, Q
+from django.contrib.auth import login
+from django.core.cache import cache
 from django.utils import timezone
+from collections import Counter
 import datetime
+import math
 
 
 # 1. The Home Page
@@ -55,8 +58,10 @@ def toggle_watched(request, movie_id):
         if not created:
             # It already existed, so this click means "uncheck it"
             watched_record.delete()
+            cache.delete(f"recommendations:user:{request.user.id}")
             return JsonResponse({'status': 'unchecked'})
 
+        cache.delete(f"recommendations:user:{request.user.id}")
         return JsonResponse({'status': 'checked'})
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
@@ -147,21 +152,21 @@ def all_movies(request):
 
 # 6. Create Account / Signup
 def signup(request):
-    # If the user clicks the "Create Account" button
     if request.method == 'POST':
         form = UserCreationForm(request.POST)
         if form.is_valid():
-            # Save the new user to the database
             user = form.save()
-            # Log them in immediately
+            email = request.POST.get('email', '').strip()
+            if email:
+                user.email = email
+                user.save()
             login(request, user)
-            # Send them to the homepage
-            return redirect('franchise_list') 
+            return redirect('franchise_list')
     else:
-        # If they just navigated to the page, show a blank form
         form = UserCreationForm()
-    
+
     return render(request, 'account/signup.html', {'form': form})
+
 
 
 @login_required(login_url='/login/')
@@ -206,7 +211,117 @@ def search(request):
         "franchises": franchises,
     })
  
- 
+
+def _compute_recommendations(user, limit=20):
+    watched = WatchedMovie.objects.filter(user=user).select_related('movie', 'movie__franchise')
+    watched_list = list(watched)
+    watched_movie_ids = {w.movie_id for w in watched_list}
+
+    watchlist_ids = set(
+        Watchlist.objects.filter(user=user).values_list('movie_id', flat=True)
+    )
+    excluded_ids = watched_movie_ids | watchlist_ids
+
+    # ---- Cold start: no watch history yet ----
+    if not watched_list:
+        return list(
+            Movie.objects.exclude(id__in=excluded_ids)
+            .order_by('-release_year')[:limit]
+        )
+
+    # ---- 1. Genre rarity weights (like IDF) ----
+    # Rare genres in the catalog are more "distinctive" — matching one means more.
+    total_movie_count = Movie.objects.count() or 1
+    genre_doc_count = Counter()
+    for genres_str in Movie.objects.values_list('genres', flat=True):
+        if not genres_str:
+            continue
+        for g in {g.strip() for g in genres_str.split(',') if g.strip()}:
+            genre_doc_count[g] += 1
+
+    genre_rarity = {
+        g: math.log(total_movie_count / (count + 1)) + 1
+        for g, count in genre_doc_count.items()
+    }
+
+    # ---- 2. User's genre taste, weighted by recency ----
+    now = timezone.now()
+    genre_taste = Counter()
+    franchise_watch_counts = Counter()
+
+    for w in watched_list:
+        movie = w.movie
+
+        # Recency decay: watched_at within last 30 days = full weight,
+        # decaying down to a floor of 0.3 for very old watches.
+        watched_at = getattr(w, 'watched_at', None)
+        if watched_at:
+            days_ago = max((now - watched_at).days, 0)
+            recency_weight = max(0.3, math.exp(-days_ago / 90))
+        else:
+            recency_weight = 0.6  # unknown timestamp, assume moderate
+
+        if movie.genres:
+            for g in {g.strip() for g in movie.genres.split(',') if g.strip()}:
+                genre_taste[g] += recency_weight * genre_rarity.get(g, 1)
+
+        if movie.franchise_id:
+            franchise_watch_counts[movie.franchise_id] += 1
+
+    if not genre_taste:
+        return list(
+            Movie.objects.exclude(id__in=excluded_ids)
+            .order_by('-release_year')[:limit]
+        )
+
+    # Normalize taste weights to 0–1 so scores are comparable across users
+    max_taste = max(genre_taste.values())
+    genre_taste = {g: v / max_taste for g, v in genre_taste.items()}
+
+    # ---- 3. Score every unwatched candidate ----
+    candidates = Movie.objects.exclude(id__in=excluded_ids).select_related('franchise')
+
+    scored = []
+    for movie in candidates:
+        if not movie.genres:
+            continue
+
+        movie_genres = {g.strip() for g in movie.genres.split(',') if g.strip()}
+        if not movie_genres:
+            continue
+
+        genre_score = sum(genre_taste.get(g, 0) for g in movie_genres) / len(movie_genres)
+
+        # Franchise bonus: user has already started this franchise
+        franchise_bonus = 0
+        if movie.franchise_id and franchise_watch_counts.get(movie.franchise_id):
+            franchise_bonus = 0.5  # flat, meaningful boost — "you're already invested"
+
+        # Mild recency-of-release nudge as a tiebreaker, not a driver
+        release_nudge = (movie.release_year or 0) / 10000
+
+        total_score = genre_score + franchise_bonus + release_nudge
+        scored.append((total_score, movie))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+
+    # ---- 4. Diversity cap: max 3 picks per franchise, so one franchise
+    # doesn't fill the entire rail ----
+    final = []
+    franchise_count_in_results = Counter()
+    for score, movie in scored:
+        fid = movie.franchise_id
+        if fid and franchise_count_in_results[fid] >= 3:
+            continue
+        final.append(movie)
+        if fid:
+            franchise_count_in_results[fid] += 1
+        if len(final) >= limit:
+            break
+
+    return final
+
+
 @login_required
 def profile(request):
     watchlist_qs = Watchlist.objects.filter(
@@ -215,9 +330,18 @@ def profile(request):
 
     watchlist_movies = [w.movie for w in watchlist_qs]
 
+    # Cache per-user for 30 minutes — this loop touches the full movie
+    # catalog, so we don't want it recomputed on every profile page load.
+    cache_key = f"recommendations:user:{request.user.id}"
+    recommended_movies = cache.get(cache_key)
+    if recommended_movies is None:
+        recommended_movies = _compute_recommendations(request.user, limit=20)
+        cache.set(cache_key, recommended_movies, timeout=60 * 30)
+
     return render(request, "profile-search/profile.html", {
         "user": request.user,
         "watchlist_movies": watchlist_movies,
+        "recommended_movies": recommended_movies,
     })
 
 
@@ -359,3 +483,5 @@ def watched_franchises_all(request):
         'franchise_data': franchise_data,
         'current_sort': sort,
     })
+
+

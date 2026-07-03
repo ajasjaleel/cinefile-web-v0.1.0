@@ -10,9 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{% static 'css/base.css' %}">
 </head><body class="ticket-page">
-
   <div class="ticket">
-
     <div class="stub">
       <div>
         <div class="stub__brand">
@@ -31,7 +29,6 @@
         <p class="stub__admit">Admit&nbsp;one</p>
         <p class="stub__tagline">Track every franchise. Pick up exactly where you left off.</p>
       </div>
-
       <div>
         <div class="stub__meta">
           <span>NO. 04217</span>
@@ -44,13 +41,10 @@
         </div>
       </div>
     </div>
-
     <div class="perforation" aria-hidden="true"></div>
-
     <div class="panel">
       <h1>Create Account</h1>
       <p class="panel__sub">Grab your ticket to start tracking your favorite franchises.</p>
-
       {% if form.errors %}
       <div class="alert" role="alert">
         {% for error in form.non_field_errors %}
@@ -64,10 +58,8 @@
         {% endfor %}
       </div>
       {% endif %}
-
       <form method="post" action="{% url 'signup' %}" novalidate>
         {% csrf_token %}
-
         {% for field in form %}
           <div class="field">
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
@@ -78,15 +70,18 @@
           </div>
         {% endfor %}
 
+        <div class="field">
+          <label for="id_email">Email (optional)</label>
+          <input type="email" name="email" id="id_email" value="{{ request.POST.email|default:'' }}">
+          <span class="helptext">Only used if you ever need to reset your password.</span>
+        </div>
+
         <button type="submit" class="submit">Create Account</button>
       </form>
-
       <p class="panel__foot">
         Already have an account? <a href="{% url 'login' %}">Sign in here</a>
       </p>
     </div>
-
   </div>
-
 </body>
 </html>
