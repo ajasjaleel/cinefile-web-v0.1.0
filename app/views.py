@@ -488,12 +488,14 @@ from django.http import HttpResponse
 from django.core.mail import send_mail
 
 def test_smtp(request):
-    send_mail(
-        subject="SMTP Test",
-        message="If you received this email, Brevo SMTP is working!",
-        from_email=None,  # Uses DEFAULT_FROM_EMAIL
-        recipient_list=["ajasjaleel253@gmail.com"],
-        fail_silently=False,
-    )
-
-    return HttpResponse("Test email sent successfully!")
+    try:
+        send_mail(
+            "SMTP Test",
+            "This is a test.",
+            None,
+            ["YOUR_EMAIL@gmail.com"],   # <-- put the email you want to receive the test
+            fail_silently=False,
+        )
+        return HttpResponse("SUCCESS")
+    except Exception as e:
+        return HttpResponse(f"<pre>{type(e).__name__}: {e}</pre>")
