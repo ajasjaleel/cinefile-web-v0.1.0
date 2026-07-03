@@ -484,4 +484,16 @@ def watched_franchises_all(request):
         'current_sort': sort,
     })
 
+from django.http import HttpResponse
+from django.core.mail import send_mail
 
+def test_smtp(request):
+    send_mail(
+        subject="SMTP Test",
+        message="If you received this email, Brevo SMTP is working!",
+        from_email=None,  # Uses DEFAULT_FROM_EMAIL
+        recipient_list=["ajasjaleel529@gmail.com"],
+        fail_silently=False,
+    )
+
+    return HttpResponse("Test email sent successfully!")
